@@ -8,7 +8,6 @@
         />
         <title>Liquid League Tracker</title>
         <link rel="stylesheet" href="styles.css" />
-        <script src="https://js.puter.com/v2/"></script>
     </head>
     <body>
         <!-- Animated Background -->
@@ -444,17 +443,26 @@
                     </div>
                 </div>
 
-                <div class="settings-group" style="opacity: 0.5">
+                <div class="settings-group">
                     <label>System-Status</label>
                     <input
                         type="text"
+                        id="ai-status"
                         class="popup-input"
-                        value="Puter.js Active"
+                        value="Groq API (Llama 3.1)"
                         readonly
+                        style="opacity: 0.7"
                     />
                     <small
                         style="font-size: 0.7rem; color: var(--text-secondary)"
-                        >KI läuft über Cloud-Infrastruktur.</small
+                        >⚡ Ultra-schnelle KI - keine Anmeldung nötig!<br />
+                        API Key:
+                        <a
+                            href="https://console.groq.com/keys"
+                            target="_blank"
+                            style="color: #64d2ff"
+                            >console.groq.com/keys</a
+                        ></small
                     >
                 </div>
 

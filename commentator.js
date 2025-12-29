@@ -1,14 +1,20 @@
 /**
  * AI Commentator for Table Tennis Liquid
- * Enhanced with deep game understanding for intelligent commentary
+ * Uses Groq API for ultra-fast, free AI responses
+ * Get your free API key at: https://console.groq.com/keys
  */
+
+// ⚠️ IMPORTANT: Get your FREE API key from https://console.groq.com/keys
+// Groq offers generous free tier - no credit card required!
+const GROQ_API_KEY = "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";
+const GROQ_MODEL = "llama-3.1-8b-instant"; // Ultra fast, great quality
 
 class AICommentator {
   constructor() {
     this.isMuted = false;
     this.isSpeaking = false;
     this.lastCommentTime = 0;
-    this.commentCooldown = 4000;
+    this.commentCooldown = 3000; // Faster cooldown since Groq is fast
     this.mode = localStorage.getItem("ai_personality") || "professional";
 
     // Deep state tracking
@@ -27,7 +33,6 @@ class AICommentator {
       p1Points: 0,
       p2Points: 0,
       promotions: { p1: 0, p2: 0 },
-      comebacks: { p1: 0, p2: 0 },
       leadChanges: 0,
       lastLeader: null,
     };
@@ -84,10 +89,8 @@ class AICommentator {
       scorerName: null,
       loserName: null,
       pointType: "normal",
-      leagueChanged: null,
       wasPromotion: false,
       promotedTo: null,
-      isComeback: false,
       currentLeader: null,
       scoreDiff: 0,
       isCloseGame: false,
@@ -109,37 +112,26 @@ class AICommentator {
       analysis.scorer = 1;
       analysis.scorerName = p2Name;
       analysis.loserName = p1Name;
-    } else if (newP1Total < oldP1Total) {
-      analysis.scorer = null;
-      analysis.pointType = "undo";
-    } else if (newP2Total < oldP2Total) {
-      analysis.scorer = null;
+    } else if (newP1Total < oldP1Total || newP2Total < oldP2Total) {
       analysis.pointType = "undo";
     }
 
     // Check for promotions
     const leagues = ["Bronze", "Silber", "Gold", "Platin"];
-    for (let i = 0; i < 4; i++) {
-      if (analysis.scorer === 0) {
-        if (p1Scores[i] > this.lastState.p1Scores[i] && i > 0) {
-          if (this.lastState.p1Scores[i - 1] >= 2) {
-            analysis.wasPromotion = true;
-            analysis.promotedTo = leagues[i];
-            analysis.leagueChanged = i;
-          }
-        }
-      } else if (analysis.scorer === 1) {
-        if (p2Scores[i] > this.lastState.p2Scores[i] && i > 0) {
-          if (this.lastState.p2Scores[i - 1] >= 2) {
-            analysis.wasPromotion = true;
-            analysis.promotedTo = leagues[i];
-            analysis.leagueChanged = i;
-          }
-        }
+    for (let i = 1; i < 4; i++) {
+      if (analysis.scorer === 0 && p1Scores[i] > this.lastState.p1Scores[i]) {
+        analysis.wasPromotion = true;
+        analysis.promotedTo = leagues[i];
+      } else if (
+        analysis.scorer === 1 &&
+        p2Scores[i] > this.lastState.p2Scores[i]
+      ) {
+        analysis.wasPromotion = true;
+        analysis.promotedTo = leagues[i];
       }
     }
 
-    // Determine current game state
+    // Game state
     analysis.scoreDiff = Math.abs(newP1Total - newP2Total);
     analysis.isTied = newP1Total === newP2Total;
     analysis.isCloseGame = analysis.scoreDiff <= 3;
@@ -164,7 +156,6 @@ class AICommentator {
     ) {
       this.matchStats.leadChanges++;
     }
-    this.matchStats.lastLeader = analysis.currentLeader;
 
     // Update streak
     if (analysis.scorer !== null) {
@@ -183,113 +174,95 @@ class AICommentator {
           player: analysis.scorerName,
         };
       }
-    }
-
-    // Determine momentum
-    if (this.streakTracker.currentStreak >= 3) {
-      analysis.momentum =
-        this.streakTracker.streakPlayer === 0 ? p1Name : p2Name;
+      // Momentum
+      if (this.streakTracker.currentStreak >= 3) {
+        analysis.momentum = analysis.scorerName;
+      }
     }
 
     return analysis;
   }
 
   /**
-   * Build comprehensive context for AI
+   * Build the prompt for Groq
    */
-  buildEnhancedPrompt(p1Scores, p2Scores, p1Name, p2Name, analysis) {
+  buildPrompt(p1Scores, p2Scores, p1Name, p2Name, analysis) {
     const p1Total = this.calculateTotal(p1Scores);
     const p2Total = this.calculateTotal(p2Scores);
 
     const personality =
       this.mode === "trash"
-        ? `Du bist ein EXTREM respektloser Trash-Talk Kommentator. Sei fies, sarkastisch, und beleidige den Verlierer brutal.
-           Nutze moderne Jugendsprache, Memes, und sei maximal provokant. Lache über Fehler. Sei gemein aber witzig.`
-        : `Du bist ein professioneller, enthusiastischer Sport-Kommentator wie bei großen TV-Übertragungen.
-           Sei emotional, spannend, und nutze dramatische Sprache. Feiere große Momente angemessen.`;
+        ? `EXTREM respektloser Trash-Talk Kommentator. Sei fies, sarkastisch, beleidige den Verlierer. Nutze Jugendsprache und sei provokant.`
+        : `Professioneller Sport-Kommentator. Sei enthusiastisch und emotional wie bei großen TV-Übertragungen.`;
 
-    const leagueExplanation = `
-LIGA-SYSTEM:
-- Bronze (1 Punkt Wert): Einstiegsliga
-- Silber (3 Punkte Wert): 3 Bronze-Siege = Aufstieg zu Silber
-- Gold (9 Punkte Wert): 3 Silber-Siege = Aufstieg zu Gold
-- Platin (27 Punkte Wert): 3 Gold-Siege = Aufstieg zu Platin (höchste Liga!)
-Bei einem Aufstieg werden die unteren Ligen beider Spieler zurückgesetzt.`;
-
-    const currentState = `
-AKTUELLER SPIELSTAND:
-${p1Name}: Bronze ${p1Scores[0]}, Silber ${p1Scores[1]}, Gold ${p1Scores[2]}, Platin ${p1Scores[3]} (Gesamt: ${p1Total} Punkte)
-${p2Name}: Bronze ${p2Scores[0]}, Silber ${p2Scores[1]}, Gold ${p2Scores[2]}, Platin ${p2Scores[3]} (Gesamt: ${p2Total} Punkte)`;
-
-    const gameState = `
-SPIELSITUATION:
-- Führung: ${analysis.isTied ? "GLEICHSTAND!" : `${analysis.currentLeader} führt mit ${analysis.scoreDiff} Punkten`}
-- Spielverlauf: ${analysis.isCloseGame ? "ENGES SPIEL!" : analysis.scoreDiff > 10 ? "Klare Führung" : "Normaler Abstand"}
-- Führungswechsel bisher: ${this.matchStats.leadChanges}`;
-
-    const momentumInfo =
-      this.streakTracker.currentStreak >= 2
-        ? `\nMOMENTUM: ${analysis.momentum !== "neutral" ? `${analysis.momentum} hat eine ${this.streakTracker.currentStreak}er Serie! 🔥` : "Ausgeglichen"}`
-        : "";
-
-    let eventDescription = "";
+    let situation = "";
     if (analysis.wasPromotion) {
-      eventDescription = `
-🎯 WICHTIGES EREIGNIS: ${analysis.scorerName} ist gerade zu ${analysis.promotedTo} aufgestiegen!
-Das ist ein großer Moment - die unteren Ligen wurden zurückgesetzt!`;
+      situation = `🎯 ${analysis.scorerName} ist zu ${analysis.promotedTo} aufgestiegen!`;
     } else if (analysis.scorer !== null) {
-      eventDescription = `
-AKTION: ${analysis.scorerName} hat einen Punkt in Bronze gemacht.`;
+      situation = `${analysis.scorerName} hat gepunktet.`;
     } else {
-      eventDescription = `
-AKTION: Punktabzug/Korrektur wurde vorgenommen.`;
+      situation = `Punktkorrektur.`;
     }
 
-    // Check for special situations
-    let specialSituation = "";
-    if (p1Scores[3] > 0 || p2Scores[3] > 0) {
-      specialSituation +=
-        "\n⭐ PLATIN-LEVEL ERREICHT! Das Spiel ist auf höchstem Niveau!";
+    // Special alerts
+    let alerts = "";
+    if (analysis.isTied && p1Total > 0) alerts += " GLEICHSTAND!";
+    if (this.streakTracker.currentStreak >= 3)
+      alerts += ` ${this.streakTracker.currentStreak}er Serie!`;
+    if (p1Scores[2] === 2) alerts += ` ${p1Name} kurz vor Platin!`;
+    if (p2Scores[2] === 2) alerts += ` ${p2Name} kurz vor Platin!`;
+
+    return `Du bist ein ${personality}
+
+SPIELSTAND:
+${p1Name}: ${p1Total} Punkte (B:${p1Scores[0]} S:${p1Scores[1]} G:${p1Scores[2]} P:${p1Scores[3]})
+${p2Name}: ${p2Total} Punkte (B:${p2Scores[0]} S:${p2Scores[1]} G:${p2Scores[2]} P:${p2Scores[3]})
+${analysis.isTied ? "GLEICHSTAND" : `${analysis.currentLeader} führt +${analysis.scoreDiff}`}
+
+EREIGNIS: ${situation}${alerts}
+
+Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
+  }
+
+  /**
+   * Call Groq API
+   */
+  async callGroq(prompt) {
+    if (GROQ_API_KEY === "YOUR_GROQ_API_KEY_HERE") {
+      console.warn(
+        "⚠️ Groq API Key nicht gesetzt! Hole dir einen kostenlosen Key: https://console.groq.com/keys",
+      );
+      return null;
     }
-    if (analysis.isTied && p1Total > 0) {
-      specialSituation += "\n⚡ GLEICHSTAND! Jeder Punkt zählt jetzt doppelt!";
+
+    try {
+      const response = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${GROQ_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: GROQ_MODEL,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 150,
+            temperature: 0.9,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Groq API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.choices[0]?.message?.content?.trim() || null;
+    } catch (error) {
+      console.error("Groq API Error:", error);
+      return null;
     }
-    if (this.streakTracker.currentStreak >= 4) {
-      specialSituation += `\n🔥 WAHNSINN! ${this.streakTracker.currentStreak} Punkte in Folge!`;
-    }
-
-    // Near promotion detection
-    let nearPromotion = "";
-    if (p1Scores[0] === 2)
-      nearPromotion += `\n${p1Name} braucht nur noch 1 Bronze für Silber-Aufstieg!`;
-    if (p2Scores[0] === 2)
-      nearPromotion += `\n${p2Name} braucht nur noch 1 Bronze für Silber-Aufstieg!`;
-    if (p1Scores[1] === 2)
-      nearPromotion += `\n${p1Name} braucht nur noch 1 Silber für Gold-Aufstieg!`;
-    if (p2Scores[1] === 2)
-      nearPromotion += `\n${p2Name} braucht nur noch 1 Silber für Gold-Aufstieg!`;
-    if (p1Scores[2] === 2)
-      nearPromotion += `\n🌟 ${p1Name} braucht nur noch 1 Gold für PLATIN-Aufstieg!`;
-    if (p2Scores[2] === 2)
-      nearPromotion += `\n🌟 ${p2Name} braucht nur noch 1 Gold für PLATIN-Aufstieg!`;
-
-    return `
-${personality}
-
-${leagueExplanation}
-
-${currentState}
-
-${gameState}${momentumInfo}
-
-${eventDescription}${specialSituation}${nearPromotion}
-
-AUFGABE: Kommentiere diesen Moment in 1-2 kurzen, prägnanten Sätzen auf Deutsch.
-- Reagiere auf das aktuelle Ereignis
-- Berücksichtige den Spielstand und die Situation
-- Sei ${this.mode === "trash" ? "maximal provokant und beleidigend" : "professionell und spannend"}
-- Antworte NUR mit dem Sprechtext, keine Erklärungen!
-    `.trim();
   }
 
   /**
@@ -322,8 +295,8 @@ AUFGABE: Kommentiere diesen Moment in 1-2 kurzen, prägnanten Sätzen auf Deutsc
     // Set thinking state
     this.setOrbState("thinking");
 
-    // Build enhanced prompt
-    const prompt = this.buildEnhancedPrompt(
+    // Build and send prompt
+    const prompt = this.buildPrompt(
       p1Scores,
       p2Scores,
       p1Name,
@@ -331,29 +304,15 @@ AUFGABE: Kommentiere diesen Moment in 1-2 kurzen, prägnanten Sätzen auf Deutsc
       analysis,
     );
 
-    // Save to history
-    this.gameHistory.push({
-      timestamp: now,
-      p1Scores: [...p1Scores],
-      p2Scores: [...p2Scores],
-      analysis,
-    });
-
     // Update last state
     this.lastState.p1Scores = [...p1Scores];
     this.lastState.p2Scores = [...p2Scores];
 
-    // Call AI
-    try {
-      const response = await puter.ai.chat(prompt);
-      const text = response.toString().trim();
-      if (text) {
-        this.speak(text);
-      } else {
-        this.setOrbState("idle");
-      }
-    } catch (error) {
-      console.error("AI Commentator Error:", error);
+    // Call Groq
+    const text = await this.callGroq(prompt);
+    if (text) {
+      this.speak(text);
+    } else {
       this.setOrbState("idle");
     }
   }
@@ -427,7 +386,6 @@ AUFGABE: Kommentiere diesen Moment in 1-2 kurzen, prägnanten Sätzen auf Deutsc
       p1Points: 0,
       p2Points: 0,
       promotions: { p1: 0, p2: 0 },
-      comebacks: { p1: 0, p2: 0 },
       leadChanges: 0,
       lastLeader: null,
     };
