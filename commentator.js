@@ -1,24 +1,28 @@
 /**
  * AI Commentator for Table Tennis Liquid
  * Uses Groq API for ultra-fast, free AI responses
- * Get your free API key at: https://console.groq.com/keys
+ * Fixed for iOS Safari speech synthesis
  */
 
-// ⚠️ IMPORTANT: Get your FREE API key from https://console.groq.com/keys
-// Groq offers generous free tier - no credit card required!
+// ⚠️ Get your FREE API key from https://console.groq.com/keys
 const GROQ_API_KEY = "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";
-const GROQ_MODEL = "llama-3.3-70b-versatile"; // Ultra fast, great quality
+const GROQ_MODEL = "llama-3.1-8b-instant";
 
 class AICommentator {
   constructor() {
     this.isMuted = false;
     this.isSpeaking = false;
     this.lastCommentTime = 0;
-    this.commentCooldown = 3000; // Faster cooldown since Groq is fast
+    this.commentCooldown = 3000;
     this.mode = localStorage.getItem("ai_personality") || "professional";
 
-    // Deep state tracking
-    this.gameHistory = [];
+    // iOS audio unlock state
+    this.audioUnlocked = false;
+    this.isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    this.speechQueue = [];
+    this.voices = [];
+
+    // State tracking
     this.lastState = {
       p1Scores: [0, 0, 0, 0],
       p2Scores: [0, 0, 0, 0],
@@ -26,25 +30,76 @@ class AICommentator {
     this.streakTracker = {
       currentStreak: 0,
       streakPlayer: null,
-      longestStreak: { count: 0, player: null },
     };
     this.matchStats = {
       totalPoints: 0,
-      p1Points: 0,
-      p2Points: 0,
-      promotions: { p1: 0, p2: 0 },
       leadChanges: 0,
-      lastLeader: null,
     };
 
-    this.initModeButtons();
+    this.init();
   }
 
-  initModeButtons() {
+  init() {
+    // Load voices
+    this.loadVoices();
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = () => this.loadVoices();
+    }
+
+    // Setup iOS audio unlock on first touch
+    if (this.isIOS) {
+      document.addEventListener("touchstart", () => this.unlockAudio(), {
+        once: true,
+      });
+      document.addEventListener("touchend", () => this.unlockAudio(), {
+        once: true,
+      });
+    }
+    document.addEventListener("click", () => this.unlockAudio(), {
+      once: true,
+    });
+
+    // Init UI
     document.addEventListener("DOMContentLoaded", () => {
       this.updateModeButtons();
       this.updateMuteButton();
     });
+  }
+
+  loadVoices() {
+    this.voices = window.speechSynthesis?.getVoices() || [];
+  }
+
+  /**
+   * Unlock audio on iOS - must be called from user interaction
+   */
+  unlockAudio() {
+    if (this.audioUnlocked) return;
+
+    // Create and play silent audio to unlock Web Audio
+    try {
+      const audioContext = new (
+        window.AudioContext || window.webkitAudioContext
+      )();
+      const buffer = audioContext.createBuffer(1, 1, 22050);
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.start(0);
+      audioContext.resume();
+    } catch (e) {
+      // Ignore errors
+    }
+
+    // Unlock speech synthesis with empty utterance
+    if (window.speechSynthesis) {
+      const unlock = new SpeechSynthesisUtterance("");
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+    }
+
+    this.audioUnlocked = true;
+    console.log("🔊 Audio unlocked for iOS");
   }
 
   updateModeButtons() {
@@ -69,9 +124,6 @@ class AICommentator {
     this.updateModeButtons();
   }
 
-  /**
-   * Calculate weighted total score
-   */
   calculateTotal(scores) {
     const weights = [1, 3, 9, 27];
     return scores.reduce(
@@ -80,30 +132,25 @@ class AICommentator {
     );
   }
 
-  /**
-   * Analyze what changed between states
-   */
   analyzeChange(p1Scores, p2Scores, p1Name, p2Name) {
-    const analysis = {
-      scorer: null,
-      scorerName: null,
-      loserName: null,
-      pointType: "normal",
-      wasPromotion: false,
-      promotedTo: null,
-      currentLeader: null,
-      scoreDiff: 0,
-      isCloseGame: false,
-      isTied: false,
-      momentum: "neutral",
-    };
-
     const oldP1Total = this.calculateTotal(this.lastState.p1Scores);
     const oldP2Total = this.calculateTotal(this.lastState.p2Scores);
     const newP1Total = this.calculateTotal(p1Scores);
     const newP2Total = this.calculateTotal(p2Scores);
 
-    // Determine who scored
+    const analysis = {
+      scorer: null,
+      scorerName: null,
+      loserName: null,
+      wasPromotion: false,
+      promotedTo: null,
+      currentLeader: null,
+      scoreDiff: Math.abs(newP1Total - newP2Total),
+      isTied: newP1Total === newP2Total,
+      momentum: "neutral",
+    };
+
+    // Who scored?
     if (newP1Total > oldP1Total) {
       analysis.scorer = 0;
       analysis.scorerName = p1Name;
@@ -112,11 +159,9 @@ class AICommentator {
       analysis.scorer = 1;
       analysis.scorerName = p2Name;
       analysis.loserName = p1Name;
-    } else if (newP1Total < oldP1Total || newP2Total < oldP2Total) {
-      analysis.pointType = "undo";
     }
 
-    // Check for promotions
+    // Check promotions
     const leagues = ["Bronze", "Silber", "Gold", "Platin"];
     for (let i = 1; i < 4; i++) {
       if (analysis.scorer === 0 && p1Scores[i] > this.lastState.p1Scores[i]) {
@@ -131,33 +176,11 @@ class AICommentator {
       }
     }
 
-    // Game state
-    analysis.scoreDiff = Math.abs(newP1Total - newP2Total);
-    analysis.isTied = newP1Total === newP2Total;
-    analysis.isCloseGame = analysis.scoreDiff <= 3;
+    // Leader
+    if (newP1Total > newP2Total) analysis.currentLeader = p1Name;
+    else if (newP2Total > newP1Total) analysis.currentLeader = p2Name;
 
-    if (newP1Total > newP2Total) {
-      analysis.currentLeader = p1Name;
-    } else if (newP2Total > newP1Total) {
-      analysis.currentLeader = p2Name;
-    }
-
-    // Track lead changes
-    const oldLeader =
-      oldP1Total > oldP2Total
-        ? p1Name
-        : oldP2Total > oldP1Total
-          ? p2Name
-          : null;
-    if (
-      analysis.currentLeader &&
-      oldLeader &&
-      analysis.currentLeader !== oldLeader
-    ) {
-      this.matchStats.leadChanges++;
-    }
-
-    // Update streak
+    // Streak tracking
     if (analysis.scorer !== null) {
       if (this.streakTracker.streakPlayer === analysis.scorer) {
         this.streakTracker.currentStreak++;
@@ -165,16 +188,6 @@ class AICommentator {
         this.streakTracker.currentStreak = 1;
         this.streakTracker.streakPlayer = analysis.scorer;
       }
-      if (
-        this.streakTracker.currentStreak >
-        this.streakTracker.longestStreak.count
-      ) {
-        this.streakTracker.longestStreak = {
-          count: this.streakTracker.currentStreak,
-          player: analysis.scorerName,
-        };
-      }
-      // Momentum
       if (this.streakTracker.currentStreak >= 3) {
         analysis.momentum = analysis.scorerName;
       }
@@ -183,28 +196,21 @@ class AICommentator {
     return analysis;
   }
 
-  /**
-   * Build the prompt for Groq
-   */
   buildPrompt(p1Scores, p2Scores, p1Name, p2Name, analysis) {
     const p1Total = this.calculateTotal(p1Scores);
     const p2Total = this.calculateTotal(p2Scores);
 
     const personality =
       this.mode === "trash"
-        ? `EXTREM respektloser Trash-Talk Kommentator. Sei fies, sarkastisch, beleidige den Verlierer. Nutze Jugendsprache und sei provokant.`
-        : `Professioneller Sport-Kommentator. Sei enthusiastisch und emotional wie bei großen TV-Übertragungen.`;
+        ? `EXTREM respektloser Trash-Talk Kommentator. Sei fies, sarkastisch, beleidige den Verlierer. Nutze Jugendsprache.`
+        : `Professioneller Sport-Kommentator. Sei enthusiastisch und emotional wie bei TV-Übertragungen.`;
 
-    let situation = "";
-    if (analysis.wasPromotion) {
-      situation = `🎯 ${analysis.scorerName} ist zu ${analysis.promotedTo} aufgestiegen!`;
-    } else if (analysis.scorer !== null) {
-      situation = `${analysis.scorerName} hat gepunktet.`;
-    } else {
-      situation = `Punktkorrektur.`;
-    }
+    let situation = analysis.wasPromotion
+      ? `🎯 ${analysis.scorerName} ist zu ${analysis.promotedTo} aufgestiegen!`
+      : analysis.scorer !== null
+        ? `${analysis.scorerName} hat gepunktet.`
+        : `Punktkorrektur.`;
 
-    // Special alerts
     let alerts = "";
     if (analysis.isTied && p1Total > 0) alerts += " GLEICHSTAND!";
     if (this.streakTracker.currentStreak >= 3)
@@ -221,17 +227,12 @@ ${analysis.isTied ? "GLEICHSTAND" : `${analysis.currentLeader} führt +${analysi
 
 EREIGNIS: ${situation}${alerts}
 
-Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
+Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext.`;
   }
 
-  /**
-   * Call Groq API
-   */
   async callGroq(prompt) {
-    if (GROQ_API_KEY === "YOUR_GROQ_API_KEY_HERE") {
-      console.warn(
-        "⚠️ Groq API Key nicht gesetzt! Hole dir einen kostenlosen Key: https://console.groq.com/keys",
-      );
+    if (!GROQ_API_KEY || GROQ_API_KEY === "YOUR_GROQ_API_KEY_HERE") {
+      console.warn("⚠️ Groq API Key fehlt!");
       return null;
     }
 
@@ -247,26 +248,23 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
           body: JSON.stringify({
             model: GROQ_MODEL,
             messages: [{ role: "user", content: prompt }],
-            max_tokens: 150,
+            max_tokens: 100,
             temperature: 0.9,
           }),
         },
       );
 
-      if (!response.ok) {
-        throw new Error(`Groq API error: ${response.status}`);
-      }
-
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
       const data = await response.json();
       return data.choices[0]?.message?.content?.trim() || null;
     } catch (error) {
-      console.error("Groq API Error:", error);
+      console.error("Groq Error:", error);
       return null;
     }
   }
 
   /**
-   * Main handler for score changes
+   * Main entry point - called from app.js
    */
   async onScoreChange(p1Scores, p2Scores, p1Name, p2Name, eventType) {
     if (this.isMuted || this.isSpeaking) return;
@@ -275,27 +273,10 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
     if (now - this.lastCommentTime < this.commentCooldown) return;
     this.lastCommentTime = now;
 
-    // Analyze what happened
     const analysis = this.analyzeChange(p1Scores, p2Scores, p1Name, p2Name);
 
-    // Update stats
-    if (analysis.scorer === 0) {
-      this.matchStats.p1Points++;
-      this.matchStats.totalPoints++;
-    } else if (analysis.scorer === 1) {
-      this.matchStats.p2Points++;
-      this.matchStats.totalPoints++;
-    }
-
-    if (analysis.wasPromotion) {
-      if (analysis.scorer === 0) this.matchStats.promotions.p1++;
-      else this.matchStats.promotions.p2++;
-    }
-
-    // Set thinking state
     this.setOrbState("thinking");
 
-    // Build and send prompt
     const prompt = this.buildPrompt(
       p1Scores,
       p2Scores,
@@ -304,11 +285,10 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
       analysis,
     );
 
-    // Update last state
+    // Update state
     this.lastState.p1Scores = [...p1Scores];
     this.lastState.p2Scores = [...p2Scores];
 
-    // Call Groq
     const text = await this.callGroq(prompt);
     if (text) {
       this.speak(text);
@@ -317,21 +297,32 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
     }
   }
 
+  /**
+   * Speak text - with iOS workarounds
+   */
   speak(text) {
+    if (!window.speechSynthesis) {
+      console.warn("Speech synthesis not supported");
+      this.setOrbState("idle");
+      return;
+    }
+
+    // Cancel any ongoing speech
     window.speechSynthesis.cancel();
+
     this.setOrbState("speaking");
     this.isSpeaking = true;
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "de-DE";
-    utterance.rate = 1.05;
+    utterance.rate = 1.0;
     utterance.pitch = 1.0;
+    utterance.volume = 1.0;
 
-    const voices = window.speechSynthesis.getVoices();
+    // Find German voice
     const germanVoice =
-      voices.find((v) => v.name.includes("Google") && v.lang.includes("de")) ||
-      voices.find((v) => v.lang.includes("de"));
-
+      this.voices.find((v) => v.lang.includes("de-DE")) ||
+      this.voices.find((v) => v.lang.includes("de"));
     if (germanVoice) utterance.voice = germanVoice;
 
     utterance.onend = () => {
@@ -339,12 +330,35 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
       this.isSpeaking = false;
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (e) => {
+      console.error("Speech error:", e);
       this.setOrbState("idle");
       this.isSpeaking = false;
     };
 
-    window.speechSynthesis.speak(utterance);
+    // iOS workaround: small delay helps
+    setTimeout(() => {
+      window.speechSynthesis.speak(utterance);
+
+      // iOS bug: speechSynthesis stops after ~15 seconds, resume it
+      if (this.isIOS) {
+        this.keepAlive();
+      }
+    }, 100);
+  }
+
+  /**
+   * iOS workaround: keep speech synthesis alive
+   */
+  keepAlive() {
+    const interval = setInterval(() => {
+      if (!this.isSpeaking) {
+        clearInterval(interval);
+        return;
+      }
+      window.speechSynthesis.pause();
+      window.speechSynthesis.resume();
+    }, 5000);
   }
 
   setOrbState(state) {
@@ -363,7 +377,7 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
     this.updateMuteButton();
 
     if (this.isMuted) {
-      window.speechSynthesis.cancel();
+      window.speechSynthesis?.cancel();
       this.isSpeaking = false;
       this.setOrbState("idle");
     }
@@ -375,32 +389,19 @@ Kommentiere in 1-2 kurzen Sätzen auf Deutsch. NUR Sprechtext, nichts anderes.`;
   }
 
   resetStats() {
-    this.gameHistory = [];
-    this.streakTracker = {
-      currentStreak: 0,
-      streakPlayer: null,
-      longestStreak: { count: 0, player: null },
-    };
-    this.matchStats = {
-      totalPoints: 0,
-      p1Points: 0,
-      p2Points: 0,
-      promotions: { p1: 0, p2: 0 },
-      leadChanges: 0,
-      lastLeader: null,
-    };
+    this.streakTracker = { currentStreak: 0, streakPlayer: null };
+    this.matchStats = { totalPoints: 0, leadChanges: 0 };
   }
 }
 
-// Create global instance
+// Global instance
 const commentator = new AICommentator();
 
-// Global functions for HTML handlers
+// Global functions for HTML
 function toggleAISettings() {
   const popup = document.getElementById("ai-settings-popup");
-  if (popup) {
+  if (popup)
     popup.style.display = popup.style.display === "none" ? "flex" : "none";
-  }
 }
 
 function closeAISettings() {
@@ -410,10 +411,4 @@ function closeAISettings() {
 
 function toggleAIMute() {
   commentator.toggleMute();
-}
-
-// Load voices
-if (window.speechSynthesis) {
-  window.speechSynthesis.onvoiceschanged = () =>
-    window.speechSynthesis.getVoices();
 }
