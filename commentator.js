@@ -675,6 +675,8 @@ ${instructions}`;
   // ============================================================================
 
   async callGroq(prompt) {
+    this.log("callGroq() called");
+
     if (!GROQ_API_KEY) {
       this.log("No Groq API key configured");
       return null;
@@ -683,30 +685,42 @@ ${instructions}`;
     try {
       this.log("Calling Groq API...");
 
-      // Timeout for Safari compatibility
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      // Build fetch options - Safari compatible
+      const fetchOptions = {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + GROQ_API_KEY,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 80,
+          temperature: 0.9,
+        }),
+      };
+
+      // Add AbortController only if supported
+      let timeoutId = null;
+      if (typeof AbortController !== "undefined") {
+        const controller = new AbortController();
+        timeoutId = setTimeout(function () {
+          controller.abort();
+        }, 10000);
+        fetchOptions.signal = controller.signal;
+      }
+
+      this.log("Fetch options ready, calling fetch...");
 
       const res = await fetch(
         "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${GROQ_API_KEY}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            model: GROQ_MODEL,
-            messages: [{ role: "user", content: prompt }],
-            max_tokens: 80,
-            temperature: 0.9,
-          }),
-          signal: controller.signal,
-        },
+        fetchOptions,
       );
 
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      this.log("Groq response status:", res.status);
 
       if (!res.ok) {
         this.log("Groq API error:", res.status, res.statusText);
@@ -714,77 +728,94 @@ ${instructions}`;
       }
 
       const data = await res.json();
-      const text = data.choices[0]?.message?.content?.trim() || null;
-      this.log("Groq response:", text);
+      this.log("Groq data received:", data);
+
+      const text =
+        data.choices && data.choices[0] && data.choices[0].message
+          ? data.choices[0].message.content.trim()
+          : null;
+      this.log("Groq response text:", text);
       return text;
     } catch (e) {
-      if (e.name === "AbortError") {
-        this.log("Groq API timeout");
-      } else {
-        this.log("Groq API exception:", e.message || e);
-      }
+      this.log("Groq API exception:", e.name, e.message, e);
       return null;
     }
   }
 
   async callElevenLabs(text) {
+    this.log("callElevenLabs() called with text:", text);
+
     if (!ELEVENLABS_API_KEY) {
       this.log("No ElevenLabs API key configured");
       return null;
     }
 
     const settings = VOICE_SETTINGS[this.mode];
+    this.log("Voice settings:", settings);
 
     try {
       this.log("Calling ElevenLabs API...");
+      this.log("Voice ID:", ELEVENLABS_VOICE_ID);
+      this.log("Model:", ELEVENLABS_MODEL);
 
-      // Timeout for Safari compatibility
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      // Build fetch options - Safari compatible
+      const fetchOptions = {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text: text,
+          model_id: ELEVENLABS_MODEL,
+          voice_settings: settings,
+        }),
+      };
+
+      // Add AbortController only if supported
+      let timeoutId = null;
+      if (typeof AbortController !== "undefined") {
+        const controller = new AbortController();
+        timeoutId = setTimeout(function () {
+          controller.abort();
+        }, 15000);
+        fetchOptions.signal = controller.signal;
+      }
+
+      this.log("Fetch options ready, calling fetch...");
 
       const res = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-        {
-          method: "POST",
-          headers: {
-            "xi-api-key": ELEVENLABS_API_KEY,
-            "Content-Type": "application/json",
-            Accept: "audio/mpeg",
-          },
-          body: JSON.stringify({
-            text: text,
-            model_id: ELEVENLABS_MODEL,
-            voice_settings: settings,
-          }),
-          signal: controller.signal,
-        },
+        "https://api.elevenlabs.io/v1/text-to-speech/" + ELEVENLABS_VOICE_ID,
+        fetchOptions,
       );
 
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      this.log("ElevenLabs response status:", res.status);
 
       if (!res.ok) {
         this.log("ElevenLabs API error:", res.status, res.statusText);
         return null;
       }
 
+      this.log("Getting blob...");
       const blob = await res.blob();
+      this.log("Blob received, size:", blob.size);
 
       // Safari needs Data URL instead of Blob URL
       if (this.isSafari || this.isIOS) {
+        this.log("Converting to Data URL for Safari...");
         const dataUrl = await this.blobToDataUrl(blob);
         this.log("ElevenLabs audio ready (Data URL for Safari)");
         return dataUrl;
       }
 
       const url = URL.createObjectURL(blob);
-      this.log("ElevenLabs audio ready");
+      this.log("ElevenLabs audio ready (Blob URL)");
       return url;
     } catch (e) {
-      if (e.name === "AbortError") {
-        this.log("ElevenLabs API timeout");
-      } else {
-        this.log("ElevenLabs API exception:", e.message || e);
-      }
+      this.log("ElevenLabs API exception:", e.name, e.message, e);
       return null;
     }
   }
@@ -972,8 +1003,17 @@ ${instructions}`;
     this.setOrbState("thinking");
 
     // Generate text with Groq
-    const prompt = this.buildGroqPrompt(analysis);
-    let text = await this.callGroq(prompt);
+    this.log("Building prompt...");
+    let prompt, text;
+
+    try {
+      prompt = this.buildGroqPrompt(analysis);
+      this.log("Prompt built, calling Groq...");
+      text = await this.callGroq(prompt);
+    } catch (e) {
+      this.log("Error building prompt or calling Groq:", e);
+      text = null;
+    }
 
     // Fallback to local phrase if Groq fails
     if (!text) {
@@ -986,8 +1026,14 @@ ${instructions}`;
       text = text.replace(/^["']|["']$/g, "").trim();
     }
 
+    this.log("Final text to speak:", text);
+
     // Speak the comment
-    await this.speak(text);
+    try {
+      await this.speak(text);
+    } catch (e) {
+      this.log("Error in speak():", e);
+    }
   }
 
   // ============================================================================
