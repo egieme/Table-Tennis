@@ -158,6 +158,7 @@ class AICommentator {
     this.currentAudio = null;
     this.audioUnlocked = false;
     this.isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    this.isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     this.voices = [];
 
     // Player names - ALWAYS track these!
@@ -767,6 +768,14 @@ ${instructions}`;
       }
 
       const blob = await res.blob();
+
+      // Safari needs Data URL instead of Blob URL
+      if (this.isSafari || this.isIOS) {
+        const dataUrl = await this.blobToDataUrl(blob);
+        this.log("ElevenLabs audio ready (Data URL for Safari)");
+        return dataUrl;
+      }
+
       const url = URL.createObjectURL(blob);
       this.log("ElevenLabs audio ready");
       return url;
@@ -778,6 +787,16 @@ ${instructions}`;
       }
       return null;
     }
+  }
+
+  // Convert Blob to Data URL for Safari compatibility
+  blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
 
   // ============================================================================
@@ -808,30 +827,66 @@ ${instructions}`;
 
   playAudio(url) {
     return new Promise((resolve) => {
-      const audio = new Audio(url);
+      const audio = new Audio();
       this.currentAudio = audio;
 
-      audio.onended = () => {
+      // Safari specific settings
+      audio.preload = "auto";
+      if (this.isIOS || this.isSafari) {
+        audio.setAttribute("playsinline", "true");
+      }
+
+      const cleanup = () => {
         this.setOrbState("idle");
         this.isSpeaking = false;
         this.currentAudio = null;
-        URL.revokeObjectURL(url);
+        // Only revoke blob URLs, not data URLs
+        if (url && url.startsWith("blob:")) {
+          URL.revokeObjectURL(url);
+        }
+      };
+
+      audio.onended = () => {
+        cleanup();
         resolve();
       };
 
       audio.onerror = (e) => {
         this.log("Audio playback error:", e);
-        this.setOrbState("idle");
-        this.isSpeaking = false;
-        this.currentAudio = null;
+        cleanup();
         resolve();
       };
 
-      audio.play().catch((e) => {
-        this.log("Audio play() failed:", e);
-        this.speakFallback("");
-        resolve();
-      });
+      // Set source and load
+      audio.src = url;
+      audio.load();
+
+      // Play with Safari retry logic
+      const tryPlay = async () => {
+        try {
+          await audio.play();
+          this.log("Audio playing");
+        } catch (e) {
+          this.log("Audio play() failed:", e.message);
+          // On Safari, retry once after short delay
+          if (this.isSafari || this.isIOS) {
+            setTimeout(async () => {
+              try {
+                await audio.play();
+              } catch (e2) {
+                this.log("Safari retry failed, using fallback");
+                cleanup();
+                resolve();
+              }
+            }, 100);
+          } else {
+            cleanup();
+            resolve();
+          }
+        }
+      };
+
+      tryPlay();
     });
   }
 
