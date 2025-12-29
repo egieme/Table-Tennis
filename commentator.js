@@ -681,6 +681,11 @@ ${instructions}`;
 
     try {
       this.log("Calling Groq API...");
+
+      // Timeout for Safari compatibility
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
       const res = await fetch(
         "https://api.groq.com/openai/v1/chat/completions",
         {
@@ -688,6 +693,7 @@ ${instructions}`;
           headers: {
             Authorization: `Bearer ${GROQ_API_KEY}`,
             "Content-Type": "application/json",
+            Accept: "application/json",
           },
           body: JSON.stringify({
             model: GROQ_MODEL,
@@ -695,11 +701,14 @@ ${instructions}`;
             max_tokens: 80,
             temperature: 0.9,
           }),
+          signal: controller.signal,
         },
       );
 
+      clearTimeout(timeoutId);
+
       if (!res.ok) {
-        this.log("Groq API error:", res.status);
+        this.log("Groq API error:", res.status, res.statusText);
         return null;
       }
 
@@ -708,7 +717,11 @@ ${instructions}`;
       this.log("Groq response:", text);
       return text;
     } catch (e) {
-      this.log("Groq API exception:", e);
+      if (e.name === "AbortError") {
+        this.log("Groq API timeout");
+      } else {
+        this.log("Groq API exception:", e.message || e);
+      }
       return null;
     }
   }
@@ -723,6 +736,11 @@ ${instructions}`;
 
     try {
       this.log("Calling ElevenLabs API...");
+
+      // Timeout for Safari compatibility
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
       const res = await fetch(
         `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
         {
@@ -730,17 +748,21 @@ ${instructions}`;
           headers: {
             "xi-api-key": ELEVENLABS_API_KEY,
             "Content-Type": "application/json",
+            Accept: "audio/mpeg",
           },
           body: JSON.stringify({
             text: text,
             model_id: ELEVENLABS_MODEL,
             voice_settings: settings,
           }),
+          signal: controller.signal,
         },
       );
 
+      clearTimeout(timeoutId);
+
       if (!res.ok) {
-        this.log("ElevenLabs API error:", res.status);
+        this.log("ElevenLabs API error:", res.status, res.statusText);
         return null;
       }
 
@@ -749,7 +771,11 @@ ${instructions}`;
       this.log("ElevenLabs audio ready");
       return url;
     } catch (e) {
-      this.log("ElevenLabs API exception:", e);
+      if (e.name === "AbortError") {
+        this.log("ElevenLabs API timeout");
+      } else {
+        this.log("ElevenLabs API exception:", e.message || e);
+      }
       return null;
     }
   }
