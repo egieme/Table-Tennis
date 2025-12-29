@@ -7,7 +7,7 @@
 // ⚠️ IMPORTANT: Get your FREE API key from https://console.groq.com/keys
 // Groq offers generous free tier - no credit card required!
 const GROQ_API_KEY = "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";
-const GROQ_MODEL = "llama-3.1-8b-instant"; // Ultra fast, great quality
+const GROQ_MODEL = "llama-3.3-70b-versatile"; // Ultra fast, great quality
 
 class AICommentator {
   constructor() {
