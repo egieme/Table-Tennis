@@ -400,6 +400,17 @@ async function savePlayerNames() {
   playerNames[1] =
     document.getElementById("p2-name-input").value.trim() || "Spieler 2";
   updatePlayerNames();
+
+  // Notify commentator about name changes so Tyrone always knows the players!
+  if (typeof commentator !== "undefined" && commentator.syncState) {
+    commentator.syncState(
+      players[0].scores,
+      players[1].scores,
+      playerNames[0],
+      playerNames[1],
+    );
+  }
+
   await saveData();
 }
 
@@ -600,9 +611,14 @@ window.addEventListener("DOMContentLoaded", () => {
   previousTotalScores[0] = getTotalScore(0);
   previousTotalScores[1] = getTotalScore(1);
 
-  // Sync commentator state
+  // Sync commentator state with player names
   if (typeof commentator !== "undefined" && commentator.syncState) {
-    commentator.syncState(players[0].scores, players[1].scores);
+    commentator.syncState(
+      players[0].scores,
+      players[1].scores,
+      playerNames[0],
+      playerNames[1],
+    );
   }
 
   // Load game data

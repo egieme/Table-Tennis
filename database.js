@@ -107,9 +107,14 @@ async function loadGameData(gameId) {
         showComebackBadge(1);
       }
 
-      // Sync commentator state with loaded game
+      // Sync commentator state with loaded game (including player names!)
       if (typeof commentator !== "undefined" && commentator.syncState) {
-        commentator.syncState(players[0].scores, players[1].scores);
+        commentator.syncState(
+          players[0].scores,
+          players[1].scores,
+          playerNames[0],
+          playerNames[1],
+        );
         commentator.resetStats();
       }
     }
@@ -267,10 +272,15 @@ async function confirmReset() {
     if (p1Badge) p1Badge.remove();
     if (p2Badge) p2Badge.remove();
 
-    // Reset commentator stats
+    // Reset commentator stats (keep player names!)
     if (typeof commentator !== "undefined" && commentator.resetStats) {
       commentator.resetStats();
-      commentator.syncState([0, 0, 0, 0], [0, 0, 0, 0]);
+      commentator.syncState(
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        playerNames[0],
+        playerNames[1],
+      );
     }
 
     updateUI();
